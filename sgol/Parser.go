@@ -1,6 +1,7 @@
 package sgol
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -81,7 +82,7 @@ func (p *Parser) ParseQueryFunctions(text string) ([]QueryFunction, error) {
 						return functions, err
 					}
 
-					matches2 := re.FindAllStringSubmatch(args_text, -1)
+					matches2 := re2.FindAllStringSubmatch(args_text, -1)
 					for _, m2 := range matches2 {
 						g2 := map[string]string{}
 						for i, name := range re2.SubexpNames() {
@@ -90,6 +91,7 @@ func (p *Parser) ParseQueryFunctions(text string) ([]QueryFunction, error) {
 							}
 						}
 						if value, ok := g2["value"]; ok {
+							value = strings.TrimSpace(value)
 							if strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"") {
 								args = append(args, value[1:len(value)-1])
 							} else {
@@ -104,10 +106,12 @@ func (p *Parser) ParseQueryFunctions(text string) ([]QueryFunction, error) {
 		}
 
 	}
+
 	return functions, nil
 }
 
 func (p *Parser) ParseFilterFunctions(text string) ([]FilterFunction, error) {
+
 	filterFunctions := []FilterFunction{}
 	queryFunctions, err := p.ParseQueryFunctions(text)
 	if err != nil {
@@ -115,11 +119,15 @@ func (p *Parser) ParseFilterFunctions(text string) ([]FilterFunction, error) {
 	}
 	if len(queryFunctions) > 0 {
 		for _, qf := range queryFunctions {
-			ff := FilterFunction{
-				Selection: []string{qf.Args[0]},
-				// TBD Add Predicates
+			qf_name_lc := strings.ToLower(qf.Name)
+			if qf_name_lc == "collectioncontains" {
+				ff := FilterFunctionCollectionContains{
+					AbstractFilterFunction: &AbstractFilterFunction{Name: qf.Name},
+					PropertyName: qf.Args[0],
+					PropertyValue: qf.Args[1],
+				}
+				filterFunctions = append(filterFunctions, ff)
 			}
-			filterFunctions = append(filterFunctions, ff)
 		}
 		return filterFunctions, nil
 	} else {
@@ -174,7 +182,9 @@ func (p *Parser) ParseBlocks(tokens []string) [][]string {
 }
 
 func (p *Parser) ParseSelect(block []string) (OperationSelect, error) {
-	op := OperationSelect{}
+	op := OperationSelect{
+		AbstractOperation: &AbstractOperation{Type: "SELECT"},
+	}
 
 	if block[1] == "$" {
 		op.Edges = p.Edges
@@ -230,8 +240,8 @@ func (p *Parser) ParseSelect(block []string) (OperationSelect, error) {
 						return op, err
 					}
 					if len(filterFunctions) > 0 {
-						op.UpdateFilterFunctions = map[string][]FilterFunction{}
-						op.UpdateFilterFunctions[block[3][1:len(block[3])]] = filterFunctions
+						op.FilterFunctions = map[string][]FilterFunction{}
+						op.FilterFunctions[block[3][1:len(block[3])]] = filterFunctions
 					}
 				} else {
 					filterFunctions, err := p.ParseFilterFunctions(p.Rejoin(block[3:len(block)]))
@@ -239,9 +249,9 @@ func (p *Parser) ParseSelect(block []string) (OperationSelect, error) {
 						return op, err
 					}
 					if len(filterFunctions) > 0 {
-						op.UpdateFilterFunctions = map[string][]FilterFunction{}
-						for _, entity := range p.Entities {
-							op.UpdateFilterFunctions[entity] = filterFunctions
+						op.FilterFunctions = map[string][]FilterFunction{}
+						for _, entity := range op.Entities {
+							op.FilterFunctions[entity] = filterFunctions
 						}
 					}
 				}
@@ -253,12 +263,12 @@ func (p *Parser) ParseSelect(block []string) (OperationSelect, error) {
 }
 
 func (p *Parser) ParseNav(block []string) (OperationNav, error) {
-	op := OperationNav{}
+	op := OperationNav{AbstractOperation: &AbstractOperation{Type: "NAV"}}
 	return op, nil
 }
 
 func (p *Parser) ParseHas(block []string) (OperationHas, error) {
-	op := OperationHas{}
+	op := OperationHas{AbstractOperation: &AbstractOperation{Type: "HAS"}}
 	return op, nil
 }
 
@@ -268,19 +278,40 @@ func (p *Parser) ParseOperations(blocks [][]string) ([]Operation, string, error)
 	for _, block := range blocks {
 		switch block[0] {
 		case "INIT":
-			operations = append(operations, OperationInit{Key: block[1]})
+			operations = append(operations, OperationInit{
+				&AbstractOperationKey{
+					AbstractOperation: &AbstractOperation{Type: "INIT"},
+					Key: block[1],
+				},
+			})
 		case "ADD":
-			operations = append(operations, OperationAdd{Key: block[1]})
+			operations = append(operations, OperationAdd{
+				&AbstractOperationKey{
+					AbstractOperation: &AbstractOperation{Type: "ADD"},
+					Key: block[1],
+				},
+			})
 		case "DISCARD":
-			operations = append(operations, OperationDiscard{Key: block[1]})
+			operations = append(operations, OperationDiscard{
+				&AbstractOperationKey{
+					AbstractOperation: &AbstractOperation{Type: "DISCARD"},
+					Key: block[1],
+				},
+			})
 		case "RELATE":
-			operations = append(operations, OperationRelate{Keys: []string{block[1]}})
+			operations = append(operations, OperationRelate{
+				AbstractOperation: &AbstractOperation{Type: "RELATE"},
+				Keys: []string{block[1]},
+			})
 		case "LIMIT":
 			limit_int, err := strconv.Atoi(block[1])
 			if err != nil {
 				return operations, output_type, err
 			}
-			operations = append(operations, OperationLimit{Limit: limit_int})
+			operations = append(operations, OperationLimit{
+				AbstractOperation: &AbstractOperation{Type: "LIMIT"},
+				Limit: limit_int,
+			})
 		case "SELECT":
 			op, err := p.ParseSelect(block)
 			if err != nil {
@@ -300,11 +331,19 @@ func (p *Parser) ParseOperations(blocks [][]string) ([]Operation, string, error)
 			}
 			operations = append(operations, op)
 		case "FETCH":
-			operations = append(operations, OperationFetch{Key: block[1]})
+			operations = append(operations, OperationFetch{
+				&AbstractOperationKey{
+					AbstractOperation: &AbstractOperation{Type: "DISCARD"},
+					Key: block[1],
+				},
+			})
 		case "SEED":
-			operations = append(operations, OperationSeed{})
+			operations = append(operations, OperationSeed{&AbstractOperation{Type: "SEED"}})
 		case "RUN":
-			operations = append(operations, OperationRun{})
+			operations = append(operations, OperationRun{
+				AbstractOperation: &AbstractOperation{Type: "RUN"},
+				Operations: []string{},
+			})
 		case "OUTPUT":
 			output_type = block[1]
 		}
@@ -312,18 +351,23 @@ func (p *Parser) ParseOperations(blocks [][]string) ([]Operation, string, error)
 	return operations, output_type, nil
 }
 
-func (p *Parser) ParseQuery(q string) ([]Operation, string, error) {
+func (p *Parser) ParseQuery(q string) (OperationChain, error) {
+
+	chain := OperationChain{}
+
 	tokens, err := p.ParseTokens(q)
 	if err != nil {
-		return []Operation{}, "", err
+		return OperationChain{}, err
 	}
 
 	blocks := p.ParseBlocks(tokens)
 
 	operations, outputType, err := p.ParseOperations(blocks)
 	if err != nil {
-		return operations, outputType, err
+		return chain, err
 	}
 
-	return operations, outputType, nil
+	chain = NewOperationChain("chain", operations, outputType)
+
+	return chain, nil
 }

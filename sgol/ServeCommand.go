@@ -14,10 +14,11 @@ import (
 
 import (
 	"github.com/gorilla/mux"
-	"github.com/patrickmn/go-cache"
+	//"github.com/patrickmn/go-cache"
 	"github.com/ttacon/chalk"
 	//"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v2"
 )
 
 type ServeCommand struct {
@@ -92,7 +93,14 @@ func (cmd *ServeCommand) Run(log *logrus.Logger, start time.Time, version string
 
 	var router = mux.NewRouter()
 
-	results := cache.New(60*time.Minute, 60*time.Second)
+	//results := cache.New(60*time.Minute, 1*time.Minute)
+	var qc *QueryCacheInstance
+	if cmd.config.QueryCache.Enabled {
+		qc = NewQueryCache(cmd.config.QueryCache)
+		if cmd.verbose {
+			log.Println("Created new query cache.")
+		}
+	}
 
 	router.Methods("GET").Name("proxy").Path("/{pathtofile:.*}").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		params := mux.Vars(r)
@@ -117,16 +125,21 @@ func (cmd *ServeCommand) Run(log *logrus.Logger, start time.Time, version string
 				return
 			}
 
-			operations, output_type, err := cmd.config.Parser.ParseQuery(q)
+			chain, err := cmd.config.Parser.ParseQuery(q)
 			if err != nil {
-				log.Println(chalk.Red, "Error: Could not parse query", chalk.Reset)
+				log.Println(chalk.Red, "Error: Could not parse query into operation chain", chalk.Reset)
 				log.Println(chalk.Red, err, chalk.Reset)
 				w.WriteHeader(500)
 				return
 			}
 
-			log.Println("Output Type:", output_type)
-			log.Println("Operations:", operations)
+			chain_yml, err := yaml.Marshal(chain)
+			if err != nil {
+				log.Println("Error: Can not encode operation chain as yaml.")
+				w.WriteHeader(500)
+				return
+			}
+			log.Println("Operation Chain:\n", string(chain_yml))
 
 			url := cmd.backend_url + "/exec." + ext + "?q=" + url.QueryEscape(q)
 			cookie := r.Header.Get("Cookie")
@@ -139,38 +152,52 @@ func (cmd *ServeCommand) Run(log *logrus.Logger, start time.Time, version string
 				//	log.Println(chalk.Green, "auth_token:", auth_token, chalk.Reset)
 			}
 
+			cacheable := false
+
 			output_text := ""
-			if data, found := results.Get(q); found {
+			if qc != nil {
+				cacheable = qc.CacheOperationChain(chain)
 				if cmd.verbose {
-					log.Println(chalk.Green, "Cache hit!", chalk.Reset)
+					fmt.Println("Op Chain Cacheable", cacheable)
 				}
-				output_text = data.(string)
+				if cacheable {
+					if data, found, err := qc.GetOperationChain(chain); err == nil && found {
+						if cmd.verbose {
+							log.Println(chalk.Green, "Cache hit!", chalk.Reset)
+						}
+						output_text = data.(string)
+					}
+				}
 			}
 
-			if len(cookie) > 0 {
-				response_text, err := cmd.MakeRequestWithCookie(url, cookie, cmd.verbose)
-				if err != nil {
-					log.Println(chalk.Red, err, chalk.Reset)
-					w.WriteHeader(500)
-					return
+			if len(output_text) == 0 {
+				if len(cookie) > 0 {
+					response_text, err := cmd.MakeRequestWithCookie(url, cookie, cmd.verbose)
+					if err != nil {
+						log.Println(chalk.Red, err, chalk.Reset)
+						w.WriteHeader(500)
+						return
+					}
+					output_text = response_text
+				} else if len(auth_token) > 0 {
+					response_text, err := cmd.MakeRequestWithAuthToken(url, auth_token, cmd.verbose)
+					if err != nil {
+						log.Println(chalk.Red, err, chalk.Reset)
+						w.WriteHeader(500)
+						return
+					}
+					output_text = response_text
 				}
-				output_text = response_text
-			} else if len(auth_token) > 0 {
-				response_text, err := cmd.MakeRequestWithAuthToken(url, auth_token, cmd.verbose)
-				if err != nil {
-					log.Println(chalk.Red, err, chalk.Reset)
-					w.WriteHeader(500)
-					return
-				}
-				output_text = response_text
-			}
 
-			//if cmd.verbose {
-			//	log.Println(chalk.Green, "output_text:", output_text, chalk.Reset)
-			//}
+				//if cmd.verbose {
+				//	log.Println(chalk.Green, "output_text:", output_text, chalk.Reset)
+				//}
+			}
 
 			if len(output_text) > 0 {
-				results.Set(q, output_text, cache.NoExpiration)
+				if qc != nil && cacheable {
+				  qc.SetOperationChain(chain, output_text)
+				}
 				w.Header().Set("Content-Type", contentType)
 				fmt.Fprintf(w, output_text)
 			} else {

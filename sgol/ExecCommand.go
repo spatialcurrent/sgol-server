@@ -55,33 +55,50 @@ func (cmd *ExecCommand) Parse(args []string) error {
 		return err
 	}
 
-	err = cmd.CheckQuery()
-	if err != nil {
-		return err
-	}
+	if ! cmd.help {
 
-	err = cmd.ParseBackendUrl()
-	if err != nil {
-		return err
-	}
+		err = cmd.CheckQuery()
+		if err != nil {
+			return err
+		}
 
-	err = cmd.ParseAuthToken()
-	if err != nil {
-		return err
-	}
+		err = cmd.ParseBackendUrl()
+		if err != nil {
+			return err
+		}
 
-	err = cmd.ParseOutputFormat()
-	if err != nil {
-		return err
+		err = cmd.ParseAuthToken()
+		if err != nil {
+			return err
+		}
+
+		err = cmd.ParseOutputFormat()
+		if err != nil {
+			return err
+		}
+
 	}
 
 	return nil
+}
+
+func (cmd *ExecCommand) BuildUrl(q string) (string, error) {
+
+  u := cmd.backend_url
+	if ! strings.HasSuffix(cmd.backend_url, "/") {
+		u += "/"
+	}
+	u += "exec." + cmd.output_format.Extension + "?q=" + url.QueryEscape(q)
+
+	return u, nil
+
 }
 
 func (cmd *ExecCommand) Run(log *logrus.Logger, start time.Time, version string) error {
 
 	if cmd.help {
 		cmd.PrintHelp(cmd.GetName(), version)
+		return nil
 	}
 
 	if len(cmd.named_query_name) > 0 {
@@ -109,7 +126,11 @@ func (cmd *ExecCommand) Run(log *logrus.Logger, start time.Time, version string)
 		cmd.query = query
 	}
 
-	url := cmd.backend_url + "/exec." + cmd.output_format.Extension + "?q=" + url.QueryEscape(cmd.query)
+  url, err := cmd.BuildUrl(cmd.query)
+	if err != nil {
+		return err
+	}
+
 	if cmd.verbose {
 		fmt.Println("url: " + url)
 	}
@@ -136,6 +157,7 @@ func NewExecCommand(config *Config) *ExecCommand {
 	return &ExecCommand{
 		HttpCommand: &HttpCommand{
 			BasicCommand: &BasicCommand{
+				evars: []string{"SGOL_BACKEND_URL", "SGOL_AUTH_TOKEN"},
 				config: config,
 			},
 		},

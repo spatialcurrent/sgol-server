@@ -4,6 +4,7 @@ type Config struct {
 	Serve          *Server         `hcl:"server"`
 	Backend        *Backend        `hcl:"backend"`
 	Parser         *Parser         `hcl:"parser"`
+	QueryCache     *QueryCache     `hcl:"cache"`
 	Formats        []*Format       `hcl:"formats"`
 	Authentication *Authentication `hcl:"authentication"`
 	NamedQueries   []*NamedQuery   `hcl:"queries"`

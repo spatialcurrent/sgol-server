@@ -13,6 +13,7 @@ import (
 )
 
 type BasicCommand struct {
+	evars []string
 	config             *Config
 	flagSet            *flag.FlagSet
 	output_uri         string
@@ -24,6 +25,10 @@ type BasicCommand struct {
 	dry_run            bool
 	version            bool
 	help               bool
+}
+
+func (cmd *BasicCommand) GetEnvironmentVariables() []string {
+	return cmd.evars
 }
 
 func (cmd *BasicCommand) NewFlagSet(name string) *flag.FlagSet {
@@ -60,6 +65,8 @@ func (cmd *BasicCommand) ParseOutputFormat() error {
 func (cmd *BasicCommand) PrintHelp(name string, version string) {
 	fmt.Println("SGOL CLI - Version " + version)
 	fmt.Println("Usage: sgol " + name)
+	fmt.Println("")
+	fmt.Println("Environment Variables: " + strings.Join(cmd.evars, ", ")+"\n")
 	fmt.Println("Options:")
 	cmd.flagSet.PrintDefaults()
 }
