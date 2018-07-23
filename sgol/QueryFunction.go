@@ -1,6 +1,6 @@
 package sgol
 
 type QueryFunction struct {
-	Name string
-	Args []string
+	Names string
+	Args  []string
 }

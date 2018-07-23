@@ -8,8 +8,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-func BuildContext(args []string, required []string, optional []string) (map[string]string, error) {
-	ctx := map[string]string{}
+func BuildContext(args []string, required []string, optional []string) (map[string]interface{}, error) {
+	ctx := map[string]interface{}{}
 	for _, a := range args {
 		parts := strings.SplitN(a, "=", 2)
 		ctx[parts[0]] = parts[1]

@@ -1,9 +1,10 @@
 package sgol
 
 import (
-	"fmt"
+	"encoding/json"
+	//"fmt"
 	"net/http"
-	"net/url"
+	//"net/url"
 	"os"
 	"path"
 	//"strings"
@@ -15,11 +16,28 @@ import (
 import (
 	"github.com/gorilla/mux"
 	//"github.com/patrickmn/go-cache"
-	"github.com/ttacon/chalk"
-	//"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
+	"github.com/pkg/errors"
+	//"github.com/sirupsen/logrus"
+	//"github.com/ttacon/chalk"
 	"gopkg.in/yaml.v2"
 )
+
+import (
+	"github.com/spatialcurrent/sgol-codec/codec"
+)
+
+import (
+	"github.com/spatialcurrent/go-auth-backend/authbackend"
+	"github.com/spatialcurrent/go-composite-logger/compositelogger"
+	"github.com/spatialcurrent/go-graph/graph"
+	"github.com/spatialcurrent/go-graph/graph/elements"
+	//"github.com/spatialcurrent/sgol-codec/codec"
+)
+
+type AddElementsInput struct {
+	Entities []elements.Entity `json:"entities" bson:"entities" yaml:"entities" hcl:"entities"`
+	Edges    []elements.Edge   `json:"edges" bson:"edges" yaml:"edges" hcl:"edges"`
+}
 
 type ServeCommand struct {
 	*HttpCommand
@@ -56,7 +74,7 @@ func (cmd *ServeCommand) Parse(args []string) error {
 	}
 	//c.sgol_config_path = flagSet.String("c", os.Getenv("SGOL_CONFIG_PATH"), "path to SGOL config.hcl")
 	fs.IntVar(&cmd.server_port, "p", port_default_int, "Server port.")
-	fs.StringVar(&cmd.backend_url, "u", os.Getenv("SGOL_BACKEND_URL"), "Backend url.")
+	//fs.StringVar(&cmd.backend_url, "u", os.Getenv("SGOL_BACKEND_URL"), "Backend url.")
 	fs.BoolVar(&cmd.verbose, "verbose", false, "Provide verbose output")
 	fs.BoolVar(&cmd.dry_run, "dry_run", false, "Connect to destination, but don't import any data.")
 	fs.BoolVar(&cmd.version, "version", false, "Version")
@@ -67,159 +85,331 @@ func (cmd *ServeCommand) Parse(args []string) error {
 		return err
 	}
 
-	err = cmd.ParseBackendUrl()
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 
-func (cmd *ServeCommand) Run(log *logrus.Logger, start time.Time, version string) error {
+func (cmd *ServeCommand) Run(start time.Time, version string) error {
 
 	if cmd.help {
 		cmd.PrintHelp(cmd.GetName(), version)
 	}
 
-	contentTypes := map[string]string{
-		"css":  "text/css",
-		"json": "application/json",
-		"js":   "application/javascript; charset=utf-8",
-		"png":  "image/png",
-		"jpg":  "image/jpeg",
-		"jpeg": "image/jpeg",
-		"jp2":  "image/jpeg",
+	var router = mux.NewRouter()
+
+	logger, err := compositelogger.NewCompositeLogger(cmd.config.Logs)
+	if err != nil {
+		return err
 	}
 
-	var router = mux.NewRouter()
+	var auth_backend authbackend.Backend
+	if cmd.config.AuthenticationConfig != nil && cmd.config.AuthenticationConfig.Enabled {
+		auth_backend, err = authbackend.LoadFromPlugin(
+			cmd.config.AuthenticationConfig.PluginPath,
+			cmd.config.AuthenticationConfig.Symbol,
+		)
+		if err != nil {
+			return err
+		}
+		err = auth_backend.Connect(cmd.config.AuthenticationConfig.Options)
+		if err != nil {
+			return err
+		}
+	}
+
+	if cmd.config.GraphBackendConfig == nil {
+		return errors.New("Graph config missing from config file.")
+	}
+
+	if !cmd.config.GraphBackendConfig.Enabled {
+		return errors.New("Graph backend is not enabled.")
+	}
+
+	graph_backend_options := cmd.config.GraphBackendConfig.Options
+
+	if sgol_backend_url := os.Getenv("SGOL_BACKEND_URL"); len(sgol_backend_url) > 0 {
+		graph_backend_options["url"] = sgol_backend_url
+	}
+
+	if sgol_backend_timeout := os.Getenv("SGOL_BACKEND_TIMEOUT"); len(sgol_backend_timeout) > 0 {
+		graph_backend_options["timeout"] = sgol_backend_timeout
+	}
+
+	graph_backend, err := graph.ConnectToBackend(
+		cmd.config.GraphBackendConfig.PluginPath,
+		cmd.config.GraphBackendConfig.Symbol,
+		graph_backend_options,
+	)
+	if err != nil {
+		return err
+	}
 
 	//results := cache.New(60*time.Minute, 1*time.Minute)
 	var qc *QueryCacheInstance
 	if cmd.config.QueryCache.Enabled {
 		qc = NewQueryCache(cmd.config.QueryCache)
 		if cmd.verbose {
-			log.Println("Created new query cache.")
+			logger.Info("Created new query cache.")
 		}
 	}
 
 	router.Methods("GET").Name("proxy").Path("/{pathtofile:.*}").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		params := mux.Vars(r)
 		pathtofile := cmd.GetParam(r, params, "pathtofile", "")
-		q := cmd.GetParam(r, params, "q", "")
 
 		filename, ext := ParseFilename(path.Base(pathtofile), true)
 
-		contentType := "text/plain"
-		if x, ok := contentTypes[ext]; ok {
-			contentType = x
+		if filename != "exec" {
+			logger.WarnWithFields("unkown path", map[string]interface{}{"path": pathtofile})
+			w.WriteHeader(404)
+			return
 		}
 
-		fmt.Println("filename:", filename)
-		fmt.Println("ext:", ext)
+		authenticated := false
+		var user authbackend.User
+		var team authbackend.Team
+
+		if auth_backend != nil {
+			authenticated2, user2, team2, err := auth_backend.AuthenticateRequest(r)
+			if err != nil {
+				logger.Warn(err)
+				graph.RespondWithError(w, ext, "Error with Authentication Backend.")
+				return
+			}
+
+			if !authenticated2 {
+				logger.Warn(err)
+				graph.RespondWithError(w, ext, "Could not authenticate.")
+				return
+			}
+
+			authenticated = authenticated2
+			user = user2
+			team = team2
+
+			logger.InfoWithFields("Authenticated", map[string]interface{}{
+				"authenticated": authenticated,
+				"user":          user.GetId(),
+				"team":          team.GetId(),
+			})
+		}
 
 		if filename == "exec" {
 
+			q := cmd.GetParam(r, params, "q", "")
+
 			if len(q) == 0 {
-				log.Println(chalk.Red, "Error: Missing query", chalk.Reset)
+				logger.Warn(errors.New("Error: Missing query"))
 				w.WriteHeader(500)
 				return
 			}
 
 			chain, err := cmd.config.Parser.ParseQuery(q)
 			if err != nil {
-				log.Println(chalk.Red, "Error: Could not parse query into operation chain", chalk.Reset)
-				log.Println(chalk.Red, err, chalk.Reset)
+				logger.WarnWithFields(errors.New("Error: Could not parse query into operation chain"), map[string]interface{}{
+					"q":             q,
+					"original":      err,
+					"authenticated": authenticated,
+				})
+				w.WriteHeader(500)
+				return
+			}
+
+			hash, err := chain.Hash()
+			if err != nil {
+				logger.WarnWithFields(errors.New("Error: Could not hash operation chain"), map[string]interface{}{
+					"chain": chain,
+				})
 				w.WriteHeader(500)
 				return
 			}
 
 			chain_yml, err := yaml.Marshal(chain)
 			if err != nil {
-				log.Println("Error: Can not encode operation chain as yaml.")
+				logger.WarnWithFields(errors.New("Error: Can not encode operation chain as yaml."), map[string]interface{}{
+					"q":             q,
+					"original":      err,
+					"authenticated": authenticated,
+				})
 				w.WriteHeader(500)
 				return
 			}
-			log.Println("Operation Chain:\n", string(chain_yml))
 
-			url := cmd.backend_url + "/exec." + ext + "?q=" + url.QueryEscape(q)
-			cookie := r.Header.Get("Cookie")
-			auth_token := r.Header.Get("X-Auth-Token")
-
-			if cmd.verbose {
-				//	log.Println(r.Header)
-				log.Println(chalk.Green, "url:", url, chalk.Reset)
-				//	log.Println(chalk.Green, "cookie:", cookie, chalk.Reset)
-				//	log.Println(chalk.Green, "auth_token:", auth_token, chalk.Reset)
-			}
+			logger.Info("Operation Chain:\n" + string(chain_yml))
 
 			cacheable := false
 
-			output_text := ""
+			qr := graph.QueryResponse{}
+			cache_hit := false
+			//output_text := ""
 			if qc != nil {
 				cacheable = qc.CacheOperationChain(chain)
+
 				if cmd.verbose {
-					fmt.Println("Op Chain Cacheable", cacheable)
+					if cacheable {
+						logger.Info("Cacheable")
+					} else {
+						logger.Info("Not cacheable")
+					}
 				}
+
 				if cacheable {
-					if data, found, err := qc.GetOperationChain(chain); err == nil && found {
+					if data, found, err := qc.GetHash(hash); err == nil && found {
 						if cmd.verbose {
-							log.Println(chalk.Green, "Cache hit!", chalk.Reset)
+							logger.InfoWithFields("Cache hit!", map[string]interface{}{
+								"chain": chain,
+								"hash":  hash,
+							})
 						}
-						output_text = data.(string)
+						qr = data
+						cache_hit = true
+
+						qr.WriteToResponse(w, ext)
 					}
 				}
 			}
 
-			if len(output_text) == 0 {
-				if len(cookie) > 0 {
-					response_text, err := cmd.MakeRequestWithCookie(url, cookie, cmd.verbose)
-					if err != nil {
-						log.Println(chalk.Red, err, chalk.Reset)
-						w.WriteHeader(500)
-						return
-					}
-					output_text = response_text
-				} else if len(auth_token) > 0 {
-					response_text, err := cmd.MakeRequestWithAuthToken(url, auth_token, cmd.verbose)
-					if err != nil {
-						log.Println(chalk.Red, err, chalk.Reset)
-						w.WriteHeader(500)
-						return
-					}
-					output_text = response_text
+			if !cache_hit {
+
+				options := map[string]string{
+					"auth_token": r.Header.Get("X-Auth-Token"),
+					"cookie":     r.Header.Get("Cookie"),
 				}
 
-				//if cmd.verbose {
-				//	log.Println(chalk.Green, "output_text:", output_text, chalk.Reset)
-				//}
-			}
+				err = graph_backend.Validate(chain, options)
+				if err != nil {
+					logger.WarnWithFields("Invalid operation chain", map[string]interface{}{"chain": chain, "message": err})
+					w.WriteHeader(600)
+					return
+				}
 
-			if len(output_text) > 0 {
+				qr, err = graph_backend.Execute(chain, options)
+				if err != nil {
+					logger.WarnWithFields(err, map[string]interface{}{
+						"q":             q,
+						"original":      err,
+						"authenticated": authenticated,
+					})
+					w.WriteHeader(500)
+				}
+
 				if qc != nil && cacheable {
-				  qc.SetOperationChain(chain, output_text)
+					if cmd.verbose {
+						logger.InfoWithFields("Saving to cache", map[string]interface{}{
+							"chain": chain,
+							"hash":  hash,
+						})
+					}
+					qc.SetHash(hash, qr)
 				}
-				w.Header().Set("Content-Type", contentType)
-				fmt.Fprintf(w, output_text)
-			} else {
-				log.Println(chalk.Red, "Response from backend was empty.", chalk.Reset)
-				w.WriteHeader(500)
-				return
+
+				qr.WriteToResponse(w, ext)
+
 			}
 
 		} else {
-			log.Println(chalk.Red, "Unknown path", pathtofile, chalk.Reset)
+			logger.WarnWithFields("unkown path", map[string]interface{}{"path": pathtofile})
 			w.WriteHeader(404)
 			return
 		}
 
 	})
 
-	log.Println(chalk.Cyan, "Listening on port", cmd.server_port, chalk.Reset)
-	log.Fatal(http.ListenAndServe(":"+strconv.Itoa(cmd.server_port), router))
+	router.Methods("POST").Name("proxy").Path("/{pathtofile:.*}").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		params := mux.Vars(r)
+		pathtofile := cmd.GetParam(r, params, "pathtofile", "")
+
+		filename, ext := ParseFilename(path.Base(pathtofile), true)
+
+		if filename != "add" {
+			logger.WarnWithFields("unkown path", map[string]interface{}{"path": pathtofile})
+			w.WriteHeader(404)
+			return
+		}
+
+		authenticated := false
+		var user authbackend.User
+		var team authbackend.Team
+
+		if auth_backend != nil {
+			authenticated2, user2, team2, err := auth_backend.AuthenticateRequest(r)
+			if err != nil {
+				logger.Warn(err)
+				w.WriteHeader(500)
+				return
+			}
+
+			if !authenticated2 {
+				logger.Warn(err)
+				w.WriteHeader(500)
+				return
+			}
+
+			authenticated = authenticated2
+			user = user2
+			team = team2
+
+			logger.InfoWithFields("Authenticated", map[string]interface{}{
+				"authenticated": authenticated,
+				"user":          user.GetId(),
+				"team":          team.GetId(),
+			})
+		}
+
+		if filename == "add" {
+
+			options := map[string]string{
+				"auth_token": r.Header.Get("X-Auth-Token"),
+				"cookie":     r.Header.Get("Cookie"),
+			}
+
+			decoder := json.NewDecoder(r.Body)
+			input := AddElementsInput{}
+			err := decoder.Decode(&input)
+			if err != nil {
+				logger.WarnWithFields("Invalid input", map[string]interface{}{"message": err})
+				w.WriteHeader(600)
+				return
+			}
+			defer r.Body.Close()
+
+			op := codec.NewOperationAdd(false)
+			op.Entities = input.Entities
+			op.Edges = input.Edges
+			operations := []graph.Operation{op}
+			chain := codec.NewOperationChain("chain", operations, "void")
+
+			err = graph_backend.Validate(chain, options)
+			if err != nil {
+				logger.WarnWithFields("Invalid operation chain", map[string]interface{}{"chain": chain, "message": err})
+				w.WriteHeader(600)
+				return
+			}
+
+			qr, err := graph_backend.Execute(chain, options)
+			if err != nil {
+				logger.WarnWithFields(err, map[string]interface{}{
+					"original":      err,
+					"authenticated": authenticated,
+				})
+				w.WriteHeader(500)
+			}
+
+			qr.WriteToResponse(w, ext)
+
+		} else {
+			logger.WarnWithFields("unkown path", map[string]interface{}{"path": pathtofile})
+			w.WriteHeader(404)
+			return
+		}
+
+	})
+
+	logger.Info("Listening on port " + strconv.Itoa(cmd.server_port))
+	logger.Fatal(http.ListenAndServe(":"+strconv.Itoa(cmd.server_port), router))
 
 	elapsed := time.Since(start)
 	if cmd.verbose {
-		log.Info("Exited after " + elapsed.String())
+		logger.Info("Exited after " + elapsed.String())
 	}
 
 	return nil

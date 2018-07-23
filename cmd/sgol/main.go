@@ -15,14 +15,14 @@ import (
 )
 
 import (
-	//"github.com/hashicorp/hcl"
-	"github.com/mattn/go-colorable"
-	//"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
+//"github.com/hashicorp/hcl"
+//"github.com/mattn/go-colorable"
+//"github.com/pkg/errors"
+//"github.com/sirupsen/logrus"
 )
 
 import (
-  "github.com/spatialcurrent/sgol-server/sgol"
+	"github.com/spatialcurrent/sgol-server/sgol"
 )
 
 var SGOL_SERVER_VERSION = "0.0.1"
@@ -48,9 +48,14 @@ func main() {
 	commands := map[string]sgol.Command{}
 	//commands["help"] = &sgol.HelpCommand{}
 	commands["serve"] = sgol.NewServeCommand(config)
+	commands["schema"] = sgol.NewSchemaCommand(config)
+	commands["validate"] = sgol.NewValidateCommand(config)
+	commands["operations"] = sgol.NewOperationsCommand(config)
+	commands["filters"] = sgol.NewFiltersCommand(config)
 	commands["queries"] = sgol.NewQueriesCommand(config)
 	commands["formats"] = sgol.NewFormatsCommand(config)
 	commands["exec"] = sgol.NewExecCommand(config)
+	commands["add"] = sgol.NewAddCommand(config)
 	//commands["lint"] = &sgol.LintCommand{}
 
 	if cmd == "help" || cmd == "--help" || cmd == "-h" || cmd == "-help" {
@@ -71,17 +76,13 @@ func main() {
 	err = commands[cmd].Parse(os.Args[2:])
 	if err != nil {
 		fmt.Println(err)
-		fmt.Println("Run \"sgol "+cmd+" -help\" for command line options.")
+		fmt.Println("Run \"sgol " + cmd + " -help\" for command line options.")
 		os.Exit(1)
 	}
 
-	logrus.SetFormatter(&logrus.TextFormatter{ForceColors: true})
-	logrus.SetOutput(colorable.NewColorableStdout())
-	var log = logrus.New()
-
-	err = commands[cmd].Run(log, start, SGOL_SERVER_VERSION)
+	err = commands[cmd].Run(start, SGOL_SERVER_VERSION)
 	if err != nil {
-		log.Println(err)
+		fmt.Println(err)
 		os.Exit(1)
 	}
 

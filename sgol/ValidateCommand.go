@@ -1,8 +1,7 @@
 package sgol
 
 import (
-	"fmt"
-	"net/url"
+	//"fmt"
 	"os"
 	"strings"
 	"time"
@@ -10,35 +9,32 @@ import (
 
 import (
 	"github.com/pkg/errors"
-	//"github.com/sirupsen/logrus"
-	//"github.com/mattn/go-colorable"
 )
 
 import (
 	"github.com/spatialcurrent/go-composite-logger/compositelogger"
 	"github.com/spatialcurrent/go-graph/graph"
-	"github.com/spatialcurrent/go-simple-serializer/simpleserializer"
 	"github.com/spatialcurrent/sgol-codec/codec"
 )
 
-type ExecCommand struct {
+type ValidateCommand struct {
 	*HttpCommand
 	named_query_name string
 	query            string
 }
 
-func (cmd *ExecCommand) GetName() string {
-	return "exec"
+func (cmd *ValidateCommand) GetName() string {
+	return "validate"
 }
 
-func (cmd *ExecCommand) CheckQuery() error {
+func (cmd *ValidateCommand) CheckQuery() error {
 	if len(cmd.query) == 0 && len(cmd.named_query_name) == 0 {
 		return errors.New("Error: Missing query.")
 	}
 	return nil
 }
 
-func (cmd *ExecCommand) Parse(args []string) error {
+func (cmd *ValidateCommand) Parse(args []string) error {
 
 	fs := cmd.NewFlagSet(cmd.GetName())
 
@@ -90,19 +86,7 @@ func (cmd *ExecCommand) Parse(args []string) error {
 	return nil
 }
 
-func (cmd *ExecCommand) BuildUrl(q string) (string, error) {
-
-	u := cmd.backend_url
-	if !strings.HasSuffix(cmd.backend_url, "/") {
-		u += "/"
-	}
-	u += "exec." + cmd.output_format.Extension + "?q=" + url.QueryEscape(q)
-
-	return u, nil
-
-}
-
-func (cmd *ExecCommand) Run(start time.Time, version string) error {
+func (cmd *ValidateCommand) Run(start time.Time, version string) error {
 
 	if cmd.help {
 		cmd.PrintHelp(cmd.GetName(), version)
@@ -111,6 +95,31 @@ func (cmd *ExecCommand) Run(start time.Time, version string) error {
 	logger, err := compositelogger.NewCompositeLogger(cmd.config.Logs)
 	if err != nil {
 		return err
+	}
+
+	if len(cmd.named_query_name) > 0 {
+		named_query_object := &codec.NamedQuery{}
+		for _, named_query := range cmd.config.NamedQueries {
+			if named_query.Name == cmd.named_query_name {
+				named_query_object = named_query
+				break
+			}
+		}
+		if len(named_query_object.Name) == 0 {
+			return errors.New("Error: Could not find named query with name " + cmd.named_query_name + ".")
+		}
+		if cmd.verbose {
+			logger.Info("Using query template " + named_query_object.Sgol)
+		}
+		ctx, err := BuildContext(cmd.flagSet.Args(), named_query_object.Required, named_query_object.Optional)
+		if err != nil {
+			return err
+		}
+		query, err := RenderTemplate(named_query_object.Sgol, ctx)
+		if err != nil {
+			return err
+		}
+		cmd.query = query
 	}
 
 	if cmd.config.GraphBackendConfig == nil {
@@ -130,31 +139,6 @@ func (cmd *ExecCommand) Run(start time.Time, version string) error {
 		return err
 	}
 
-	if len(cmd.named_query_name) > 0 {
-		named_query_object := &codec.NamedQuery{}
-		for _, named_query := range cmd.config.NamedQueries {
-			if named_query.Name == cmd.named_query_name {
-				named_query_object = named_query
-				break
-			}
-		}
-		if len(named_query_object.Name) == 0 {
-			return errors.New("Error: Could not find named query with name " + cmd.named_query_name + ".")
-		}
-		if cmd.verbose {
-			fmt.Println("Using query template " + named_query_object.Sgol)
-		}
-		ctx, err := BuildContext(cmd.flagSet.Args(), named_query_object.Required, named_query_object.Optional)
-		if err != nil {
-			return err
-		}
-		query, err := RenderTemplate(named_query_object.Sgol, ctx)
-		if err != nil {
-			return err
-		}
-		cmd.query = query
-	}
-
 	chain, err := cmd.config.Parser.ParseQuery(cmd.query)
 	if err != nil {
 		return err
@@ -167,35 +151,6 @@ func (cmd *ExecCommand) Run(start time.Time, version string) error {
 		return err
 	}
 
-	qr, err := graph_backend.Execute(chain, map[string]string{
-		"auth_token": cmd.auth_token,
-	})
-	if err != nil {
-		return err
-	}
-
-	output_text := ""
-	if cmd.output_format.Id == "geojson" {
-		output_data, err := qr.Results.FeatureCollection()
-		if err != nil {
-			return err
-		}
-		output_text, err = simpleserializer.Serialize(output_data, "json")
-		if err != nil {
-			return err
-		}
-	} else {
-		output_text, err = simpleserializer.Serialize(qr.Results, cmd.output_format.Id)
-		if err != nil {
-			return err
-		}
-	}
-
-	err = cmd.WriteOutput(cmd.output_uri, output_text)
-	if err != nil {
-		return err
-	}
-
 	elapsed := time.Since(start)
 	if cmd.verbose {
 		logger.Info("Done in " + elapsed.String())
@@ -204,8 +159,8 @@ func (cmd *ExecCommand) Run(start time.Time, version string) error {
 	return nil
 }
 
-func NewExecCommand(config *Config) *ExecCommand {
-	return &ExecCommand{
+func NewValidateCommand(config *Config) *ValidateCommand {
+	return &ValidateCommand{
 		HttpCommand: &HttpCommand{
 			BasicCommand: &BasicCommand{
 				evars:  []string{"SGOL_BACKEND_URL", "SGOL_AUTH_TOKEN"},

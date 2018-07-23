@@ -18,7 +18,7 @@ type HttpCommand struct {
 
 func (cmd *HttpCommand) ParseBackendUrl() error {
 	if len(cmd.backend_url) == 0 {
-		cmd.backend_url = cmd.config.Backend.Url
+		cmd.backend_url = cmd.config.GraphBackendConfig.Options["url"]
 		if len(cmd.backend_url) == 0 {
 			return errors.New("Error: missing backend url")
 		}
@@ -28,8 +28,8 @@ func (cmd *HttpCommand) ParseBackendUrl() error {
 
 func (cmd *HttpCommand) ParseAuthToken() error {
 	if len(cmd.auth_token) == 0 {
-		if cmd.config.Authentication != nil {
-			cmd.auth_token = cmd.config.Authentication.Token
+		if cmd.config.Client != nil {
+			cmd.auth_token = cmd.config.Client.Token
 		}
 		if len(cmd.auth_token) == 0 {
 			return errors.New("Error: missing authentication token")

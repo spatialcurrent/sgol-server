@@ -8,6 +8,7 @@ import (
 
 import (
 	//"github.com/pkg/errors"
+	"github.com/mattn/go-colorable"
 	"github.com/sirupsen/logrus"
 	"github.com/spatialcurrent/go-simple-serializer/simpleserializer"
 )
@@ -50,11 +51,15 @@ func (cmd *QueriesCommand) Parse(args []string) error {
 	return nil
 }
 
-func (cmd *QueriesCommand) Run(log *logrus.Logger, start time.Time, version string) error {
+func (cmd *QueriesCommand) Run(start time.Time, version string) error {
 
 	if cmd.help {
 		cmd.PrintHelp(cmd.GetName(), version)
 	} else {
+
+		logrus.SetFormatter(&logrus.TextFormatter{ForceColors: true})
+		logrus.SetOutput(colorable.NewColorableStdout())
+		var log = logrus.New()
 
 		output_format := cmd.output_format.Id
 

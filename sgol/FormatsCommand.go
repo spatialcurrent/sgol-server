@@ -2,13 +2,14 @@ package sgol
 
 import (
 	//"os"
+	"fmt"
 	"strings"
 	"time"
 )
 
 import (
 	//"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
+	//"github.com/sirupsen/logrus"
 	"github.com/spatialcurrent/go-simple-serializer/simpleserializer"
 )
 
@@ -50,7 +51,7 @@ func (cmd *FormatsCommand) Parse(args []string) error {
 	return nil
 }
 
-func (cmd *FormatsCommand) Run(log *logrus.Logger, start time.Time, version string) error {
+func (cmd *FormatsCommand) Run(start time.Time, version string) error {
 
 	if cmd.help {
 		cmd.PrintHelp(cmd.GetName(), version)
@@ -79,7 +80,7 @@ func (cmd *FormatsCommand) Run(log *logrus.Logger, start time.Time, version stri
 
 		elapsed := time.Since(start)
 		if cmd.verbose {
-			log.Info("Done in " + elapsed.String())
+			fmt.Println("Done in " + elapsed.String())
 		}
 	}
 
